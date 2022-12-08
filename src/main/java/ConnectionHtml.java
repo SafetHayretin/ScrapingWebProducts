@@ -13,40 +13,40 @@ import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
 public class ConnectionHtml implements Runnable {
-    private final String link;
+    private final String baseURL;
 
     private final String imagesDirectory;
 
-    private final List<Product> downloadedProducts;
+    private final List<Product> DOWNLOADED_PRODUCTS;
 
     private final ProductsDao dao = new ProductsDao();
 
-    private final List<String> photoLinks = new ArrayList<>();
-
     private final HttpClient client;
 
-    public ConnectionHtml(String link, String imagesDirectory) {
-        this.link = link;
+    private final String BASE_URL = "http://books.toscrape.com/";
+
+    public ConnectionHtml(String baseURL, String imagesDirectory) {
+        this.baseURL = baseURL;
         this.client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build();
         this.imagesDirectory = imagesDirectory;
-        downloadedProducts = dao.getAll();
-        getAllLinksToPhotos();
+        DOWNLOADED_PRODUCTS = dao.getAll();
     }
 
     @Override
     public void run() {
         try {
-            HttpRequest.Builder builder = HttpRequest.newBuilder().uri(new URI(link)).GET();
+            HttpRequest.Builder builder = HttpRequest.newBuilder().uri(new URI(baseURL)).GET();
 
             HttpRequest request = builder.build();
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
             Document doc = Jsoup.parse(response.body(), response.uri().toString());
+
+
             Elements elements = doc.getElementsByClass("col-xs-6 col-sm-4 col-md-3 col-lg-3");
 
             scrapeHtml(elements);
@@ -57,7 +57,7 @@ public class ConnectionHtml implements Runnable {
 
     private void scrapeHtml(Elements elements) throws MalformedURLException {
         for (Element e : elements) {
-            String imgLink = getImageLink(e);
+            String imgLink = getImageLinkFromHtml(e);
 
             Product product = new Product();
 
@@ -66,23 +66,50 @@ public class ConnectionHtml implements Runnable {
             product.setName(name);
 
             ele = e.getElementsByClass("product_price");
-            String price = getPrice(ele);
-            product.setPrice(price);
-            product.setPath(imgLink);
+            String price = getPriceFromHtml(ele);
+            product.setPrice(price.substring(1));
+            product.setPath(imgLink.substring(3));
 
             product.setDateAdded(getDate());
-            if (photoLinks.contains(imgLink)) {
+            if (DOWNLOADED_PRODUCTS.contains(product)) {
                 dao.update(product);
-                photoLinks.remove(imgLink);
+                Product prevProd = getProductFromDB(product);
+
+                assert prevProd != null;
+                if (prevProd.getPrice().equals(product.getPrice()))
+                    logPriceUpdate(prevProd, product);
+
+                DOWNLOADED_PRODUCTS.remove(product);
                 continue;
             }
 
             dao.insert(product);
             System.out.println(product.getName() + " " + product.getPrice());
 
-            String linkToDownload = this.link + imgLink;
+            String linkToDownload = BASE_URL + imgLink.substring(3);
+            System.out.println(product);
             downloadPhoto(linkToDownload, product.getId());
         }
+
+//        for (Product p : DOWNLOADED_PRODUCTS) {
+//            System.out.println("Product is no longer available: " + p.getName());
+//            dao.delete(p);
+//        }
+    }
+
+    private void logPriceUpdate(Product prevProd, Product newProd) {
+        System.out.println("name: " + prevProd.getName());
+        System.out.println("prev price: " + prevProd.getPrice());
+        System.out.println("new price: " + newProd.getPrice());
+    }
+
+    private Product getProductFromDB(Product product) {
+        for (Product p : DOWNLOADED_PRODUCTS) {
+            if (p.equals(product))
+                return p;
+        }
+
+        return null;
     }
 
 
@@ -91,17 +118,11 @@ public class ConnectionHtml implements Runnable {
         return new java.sql.Date(date.getTime());
     }
 
-    private void getAllLinksToPhotos() {
-        for (Product p : downloadedProducts) {
-            photoLinks.add(p.getPath());
-        }
-    }
-
-    private String getPrice(Elements elements) {
+    private String getPriceFromHtml(Elements elements) {
         return elements.get(0).getElementsByTag("p").get(0).text();
     }
 
-    private String getImageLink(Element e) {
+    private String getImageLinkFromHtml(Element e) {
         Elements elements = e.getElementsByTag("img");
         return elements.get(0).attr("src");
     }
@@ -111,7 +132,7 @@ public class ConnectionHtml implements Runnable {
         String name = id + ".jpg";
         try (InputStream in = new BufferedInputStream(url.openStream());
              ByteArrayOutputStream out = new ByteArrayOutputStream();
-             FileOutputStream fos = new FileOutputStream(imagesDirectory + name);) {
+             FileOutputStream fos = new FileOutputStream(imagesDirectory + name)) {
             byte[] buf = new byte[1024];
             for (int n; -1 != (n = in.read(buf)); ) {
                 out.write(buf, 0, n);
